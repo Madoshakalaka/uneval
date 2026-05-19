@@ -2,17 +2,62 @@
 
 use crate::error::UnevalError;
 use serde::ser;
+use std::borrow::Cow;
+use std::fmt::Write as _;
 use std::io::Write;
 
 pub(crate) type SerResult = Result<(), UnevalError>;
+
+/// Strategy for writing string values to the generated Rust code.
+///
+/// Serde's data model gives the serializer a `&str` but no information about the
+/// destination field's type, so the serializer has to commit to a single shape for
+/// every string. `StringMode` lets the caller choose which shape that is. Set it
+/// via [`Uneval::string_mode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StringMode {
+    /// Wrap every string with a call to `.into()` (the historical default).
+    ///
+    /// Works for any destination type that implements `From<&'static str>`,
+    /// including `String`, `Cow<'static, str>`, and `Box<str>`. It also still
+    /// works for `&'static str` fields via the reflexive `From<T> for T` impl
+    /// (though the call is then redundant).
+    ///
+    /// Generated code in this mode is **not** usable inside `const`/`static`
+    /// items, because `Into::into` is not a const-stable trait method.
+    #[default]
+    IntoCall,
+    /// Emit raw `&'static str` literals (`"..."`) with no conversion wrapper.
+    ///
+    /// Use this when the destination field type is `&'static str`, or when the
+    /// generated code must be embeddable in a `const`/`static` item. The output
+    /// is exactly the string literal, with only the characters that Rust
+    /// requires escaped: `\\`, `\"`, and control codes.
+    Literal,
+}
 
 /// Main serializer implementation.
 ///
 /// Users are usually encouraged to use [`to_out_dir`][crate::funcs::to_out_dir] or, in special cases,
 /// [`to_file`][crate::funcs::to_file], [`write`][crate::funcs::write] or [`to_string`][crate::funcs::to_string].
+///
+/// Construct directly when you need to override the default behavior:
+///
+/// ```no_run
+/// use serde::Serialize;
+/// use uneval::ser::{StringMode, Uneval};
+///
+/// #[derive(Serialize)]
+/// struct Sample { name: &'static str }
+///
+/// let mut buf = Vec::new();
+/// let mut ser = Uneval::new(&mut buf).string_mode(StringMode::Literal);
+/// Sample { name: "hi" }.serialize(&mut ser).unwrap();
+/// ```
 pub struct Uneval<W: Write> {
     writer: W,
     inside: bool,
+    string_mode: StringMode,
 }
 
 impl<W: Write> Uneval<W> {
@@ -20,7 +65,14 @@ impl<W: Write> Uneval<W> {
         Self {
             writer: target,
             inside: false,
+            string_mode: StringMode::default(),
         }
+    }
+
+    /// Choose how string values are written into the generated code. See [`StringMode`].
+    pub fn string_mode(mut self, mode: StringMode) -> Self {
+        self.string_mode = mode;
+        self
     }
 
     fn start_sub(&mut self) -> &mut Self {
@@ -121,12 +173,16 @@ impl<W: Write> ser::Serializer for &mut Uneval<W> {
     }
 
     fn serialize_char(self, v: char) -> SerResult {
-        write!(self.writer, "'{}'", v.escape_default().collect::<String>())?;
+        write!(self.writer, "'{}'", escape_char(v))?;
         Ok(())
     }
 
     fn serialize_str(self, v: &str) -> SerResult {
-        write!(self.writer, "\"{}\".into()", v.escape_default().collect::<String>())?;
+        let escaped = escape_str(v);
+        match self.string_mode {
+            StringMode::IntoCall => write!(self.writer, "\"{}\".into()", escaped)?,
+            StringMode::Literal => write!(self.writer, "\"{}\"", escaped)?,
+        }
         Ok(())
     }
 
@@ -140,9 +196,9 @@ impl<W: Write> ser::Serializer for &mut Uneval<W> {
         Ok(())
     }
 
-    fn serialize_some<T: ?Sized>(self, value: &T) -> SerResult
+    fn serialize_some<T>(self, value: &T) -> SerResult
     where
-        T: serde::Serialize,
+        T: ?Sized + serde::Serialize,
     {
         write!(self.writer, "Some(")?;
         value.serialize(&mut *self)?;
@@ -156,7 +212,7 @@ impl<W: Write> ser::Serializer for &mut Uneval<W> {
     }
 
     fn serialize_unit_struct(self, name: &'static str) -> SerResult {
-        write!(self.writer, "{}", name)?;
+        write!(self.writer, "{}", rust_ident(name))?;
         Ok(())
     }
 
@@ -166,21 +222,21 @@ impl<W: Write> ser::Serializer for &mut Uneval<W> {
         _variant_index: u32,
         variant: &'static str,
     ) -> SerResult {
-        write!(self.writer, "{}::{}", name, variant)?;
+        write!(self.writer, "{}::{}", rust_ident(name), rust_ident(variant))?;
         Ok(())
     }
 
-    fn serialize_newtype_struct<T: ?Sized>(self, name: &'static str, value: &T) -> SerResult
+    fn serialize_newtype_struct<T>(self, name: &'static str, value: &T) -> SerResult
     where
-        T: serde::Serialize,
+        T: ?Sized + serde::Serialize,
     {
-        write!(self.writer, "{}(", name)?;
+        write!(self.writer, "{}(", rust_ident(name))?;
         value.serialize(&mut *self)?;
         write!(self.writer, ")")?;
         Ok(())
     }
 
-    fn serialize_newtype_variant<T: ?Sized>(
+    fn serialize_newtype_variant<T>(
         self,
         name: &'static str,
         _variant_index: u32,
@@ -188,9 +244,9 @@ impl<W: Write> ser::Serializer for &mut Uneval<W> {
         value: &T,
     ) -> SerResult
     where
-        T: serde::Serialize,
+        T: ?Sized + serde::Serialize,
     {
-        write!(self.writer, "{}::{}(", name, variant)?;
+        write!(self.writer, "{}::{}(", rust_ident(name), rust_ident(variant))?;
         value.serialize(&mut *self)?;
         write!(self.writer, ")")?;
         Ok(())
@@ -213,7 +269,7 @@ impl<W: Write> ser::Serializer for &mut Uneval<W> {
         name: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleStruct, Self::Error> {
-        write!(self.writer, "{}(", name)?;
+        write!(self.writer, "{}(", rust_ident(name))?;
         Ok(self.start_sub())
     }
 
@@ -224,7 +280,7 @@ impl<W: Write> ser::Serializer for &mut Uneval<W> {
         variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
-        write!(self.writer, "{}::{}(", name, variant)?;
+        write!(self.writer, "{}::{}(", rust_ident(name), rust_ident(variant))?;
         Ok(self.start_sub())
     }
 
@@ -238,7 +294,7 @@ impl<W: Write> ser::Serializer for &mut Uneval<W> {
         name: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeStruct, Self::Error> {
-        write!(self.writer, "{} {{", name)?;
+        write!(self.writer, "{} {{", rust_ident(name))?;
         Ok(self.start_sub())
     }
 
@@ -249,7 +305,7 @@ impl<W: Write> ser::Serializer for &mut Uneval<W> {
         variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
-        write!(self.writer, "{}::{} {{", name, variant)?;
+        write!(self.writer, "{}::{} {{", rust_ident(name), rust_ident(variant))?;
         Ok(self.start_sub())
     }
 }
@@ -258,9 +314,9 @@ impl<W: Write> ser::SerializeSeq for &mut Uneval<W> {
     type Ok = ();
     type Error = UnevalError;
 
-    fn serialize_element<T: ?Sized>(&mut self, value: &T) -> Result<(), Self::Error>
+    fn serialize_element<T>(&mut self, value: &T) -> Result<(), Self::Error>
     where
-        T: serde::Serialize,
+        T: ?Sized + serde::Serialize,
     {
         self.serialize_item(value)
     }
@@ -275,9 +331,9 @@ impl<W: Write> ser::SerializeTuple for &mut Uneval<W> {
     type Ok = ();
     type Error = UnevalError;
 
-    fn serialize_element<T: ?Sized>(&mut self, value: &T) -> Result<(), Self::Error>
+    fn serialize_element<T>(&mut self, value: &T) -> Result<(), Self::Error>
     where
-        T: serde::Serialize,
+        T: ?Sized + serde::Serialize,
     {
         self.serialize_item(value)
     }
@@ -292,9 +348,9 @@ impl<W: Write> ser::SerializeTupleStruct for &mut Uneval<W> {
     type Ok = ();
     type Error = UnevalError;
 
-    fn serialize_field<T: ?Sized>(&mut self, value: &T) -> Result<(), Self::Error>
+    fn serialize_field<T>(&mut self, value: &T) -> Result<(), Self::Error>
     where
-        T: serde::Serialize,
+        T: ?Sized + serde::Serialize,
     {
         self.serialize_item(value)
     }
@@ -309,9 +365,9 @@ impl<W: Write> ser::SerializeTupleVariant for &mut Uneval<W> {
     type Ok = ();
     type Error = UnevalError;
 
-    fn serialize_field<T: ?Sized>(&mut self, value: &T) -> Result<(), Self::Error>
+    fn serialize_field<T>(&mut self, value: &T) -> Result<(), Self::Error>
     where
-        T: serde::Serialize,
+        T: ?Sized + serde::Serialize,
     {
         self.serialize_item(value)
     }
@@ -326,9 +382,9 @@ impl<W: Write> ser::SerializeMap for &mut Uneval<W> {
     type Ok = ();
     type Error = UnevalError;
 
-    fn serialize_key<T: ?Sized>(&mut self, key: &T) -> Result<(), Self::Error>
+    fn serialize_key<T>(&mut self, key: &T) -> Result<(), Self::Error>
     where
-        T: serde::Serialize,
+        T: ?Sized + serde::Serialize,
     {
         self.comma()?;
         write!(self.writer, "(")?;
@@ -337,9 +393,9 @@ impl<W: Write> ser::SerializeMap for &mut Uneval<W> {
         Ok(())
     }
 
-    fn serialize_value<T: ?Sized>(&mut self, value: &T) -> Result<(), Self::Error>
+    fn serialize_value<T>(&mut self, value: &T) -> Result<(), Self::Error>
     where
-        T: serde::Serialize,
+        T: ?Sized + serde::Serialize,
     {
         value.serialize(&mut **self)?;
         write!(self.writer, ")")?;
@@ -356,16 +412,16 @@ impl<W: Write> ser::SerializeStruct for &mut Uneval<W> {
     type Ok = ();
     type Error = UnevalError;
 
-    fn serialize_field<T: ?Sized>(
+    fn serialize_field<T>(
         &mut self,
         key: &'static str,
         value: &T,
     ) -> Result<(), Self::Error>
     where
-        T: serde::Serialize,
+        T: ?Sized + serde::Serialize,
     {
         self.comma()?;
-        write!(self.writer, "{}: ", key)?;
+        write!(self.writer, "{}: ", rust_ident(key))?;
         value.serialize(&mut **self)?;
         Ok(())
     }
@@ -380,16 +436,16 @@ impl<W: Write> ser::SerializeStructVariant for &mut Uneval<W> {
     type Ok = ();
     type Error = UnevalError;
 
-    fn serialize_field<T: ?Sized>(
+    fn serialize_field<T>(
         &mut self,
         key: &'static str,
         value: &T,
     ) -> Result<(), Self::Error>
     where
-        T: serde::Serialize,
+        T: ?Sized + serde::Serialize,
     {
         self.comma()?;
-        write!(self.writer, "{}: ", key)?;
+        write!(self.writer, "{}: ", rust_ident(key))?;
         value.serialize(&mut **self)?;
         Ok(())
     }
@@ -398,5 +454,115 @@ impl<W: Write> ser::SerializeStructVariant for &mut Uneval<W> {
         write!(self.writer, "}}")?;
         self.inside = true;
         Ok(())
+    }
+}
+
+/// Wrap a Rust identifier in `r#` if it collides with a keyword.
+///
+/// Returns the original `&str` borrowed if no rewriting is needed, otherwise an
+/// owned `String`. Keywords that cannot be made into raw identifiers (`crate`,
+/// `self`, `Self`, `super`, `extern`) are returned unchanged: emitting them will
+/// produce a clear compile error at the include site, which is preferable to a
+/// silently-corrupt `r#self`.
+pub(crate) fn rust_ident(name: &str) -> Cow<'_, str> {
+    if needs_raw_prefix(name) {
+        Cow::Owned(format!("r#{}", name))
+    } else {
+        Cow::Borrowed(name)
+    }
+}
+
+fn needs_raw_prefix(name: &str) -> bool {
+    matches!(
+        name,
+        "as" | "break"
+            | "const"
+            | "continue"
+            | "else"
+            | "enum"
+            | "false"
+            | "fn"
+            | "for"
+            | "if"
+            | "impl"
+            | "in"
+            | "let"
+            | "loop"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "pub"
+            | "ref"
+            | "return"
+            | "static"
+            | "struct"
+            | "trait"
+            | "true"
+            | "type"
+            | "unsafe"
+            | "use"
+            | "where"
+            | "while"
+            | "async"
+            | "await"
+            | "dyn"
+            | "gen"
+            | "abstract"
+            | "become"
+            | "box"
+            | "do"
+            | "final"
+            | "macro"
+            | "override"
+            | "priv"
+            | "try"
+            | "typeof"
+            | "unsized"
+            | "virtual"
+            | "yield"
+    )
+}
+
+/// Escape a `&str` value for embedding inside a Rust string literal (`"..."`).
+///
+/// Only the characters that the Rust grammar actually requires escaping are
+/// changed: backslash, double-quote, the four common control codes (`\n`, `\r`,
+/// `\t`, `\0`), and other control characters (emitted as `\u{...}`). Every
+/// other character — including the entire printable Unicode range — is left
+/// untouched, so input like `"矛盾"` round-trips as `"矛盾"`, not `"\u{77db}\u{76fe}"`.
+fn escape_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        push_escape(&mut out, c, EscapeContext::Str);
+    }
+    out
+}
+
+fn escape_char(c: char) -> String {
+    let mut out = String::with_capacity(2);
+    push_escape(&mut out, c, EscapeContext::Char);
+    out
+}
+
+#[derive(Clone, Copy)]
+enum EscapeContext {
+    Str,
+    Char,
+}
+
+fn push_escape(out: &mut String, c: char, ctx: EscapeContext) {
+    match c {
+        '\\' => out.push_str("\\\\"),
+        '\n' => out.push_str("\\n"),
+        '\r' => out.push_str("\\r"),
+        '\t' => out.push_str("\\t"),
+        '\0' => out.push_str("\\0"),
+        '"' if matches!(ctx, EscapeContext::Str) => out.push_str("\\\""),
+        '\'' if matches!(ctx, EscapeContext::Char) => out.push_str("\\'"),
+        c if c.is_control() => {
+            let _ = write!(out, "\\u{{{:x}}}", c as u32);
+        }
+        c => out.push(c),
     }
 }

@@ -12,8 +12,28 @@ use toml::from_str;
 struct Data {
     main_type: String,
     support_types: Option<String>,
+    #[serde(default)]
+    string_mode: StringModeKind,
+    #[serde(default)]
+    const_compat: bool,
     definition: String,
     value: String,
+}
+
+#[derive(Deserialize, Default, Clone, Copy)]
+enum StringModeKind {
+    #[default]
+    IntoCall,
+    Literal,
+}
+
+impl StringModeKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            StringModeKind::IntoCall => "IntoCall",
+            StringModeKind::Literal => "Literal",
+        }
+    }
 }
 
 impl Data {
@@ -25,40 +45,53 @@ impl Data {
         }
         path.push("dummy"); // a hack, so that folder isn't overwritten with file name
         write!(
-            File::create(&path.with_file_name(format!("{}-main.rs", name))).unwrap(),
+            File::create(path.with_file_name(format!("{}-main.rs", name))).unwrap(),
             include_str!("main.tpl"),
             name = name,
-            value = self.value
+            value = self.value,
+            string_mode = self.string_mode.as_str()
         )
         .unwrap();
         write!(
-            File::create(&path.with_file_name("definition.rs")).unwrap(),
+            File::create(path.with_file_name("definition.rs")).unwrap(),
             include_str!("definition.tpl"),
             definition = self.definition
         )
         .unwrap();
+        let types = self
+            .support_types
+            .as_ref()
+            .map_or(self.main_type.clone(), |types| {
+                format!("{},{}", self.main_type, types)
+            });
+        let user_path = path.with_file_name(format!("{}-user.rs", name));
+        if self.const_compat {
+            write!(
+                File::create(&user_path).unwrap(),
+                include_str!("user_const.tpl"),
+                types = types,
+                ser_type = self.main_type,
+                value = self.value
+            )
+            .unwrap();
+        } else {
+            write!(
+                File::create(&user_path).unwrap(),
+                include_str!("user.tpl"),
+                types = types,
+                ser_type = self.main_type,
+                value = self.value
+            )
+            .unwrap();
+        }
         write!(
-            File::create(&path.with_file_name(format!("{}-user.rs", name))).unwrap(),
-            include_str!("user.tpl"),
-            types = self
-                .support_types
-                .as_ref()
-                .map_or(self.main_type.clone(), |types| format!(
-                    "{},{}",
-                    self.main_type, types
-                )),
-            ser_type = self.main_type,
-            value = self.value
-        )
-        .unwrap();
-        write!(
-            File::create(&path.with_file_name(format!("{}-main.snapshot", name))).unwrap(),
+            File::create(path.with_file_name(format!("{}-main.snapshot", name))).unwrap(),
             include_str!("main.snapshot.tpl"),
             name = name
         )
         .unwrap();
         write!(
-            File::create(&path.with_file_name(format!("{}-user.snapshot", name))).unwrap(),
+            File::create(path.with_file_name(format!("{}-user.snapshot", name))).unwrap(),
             include_str!("user.snapshot.tpl"),
         )
         .unwrap();

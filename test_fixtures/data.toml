@@ -187,3 +187,78 @@ definition::Foo {
     c: vec!['\\'', '\\n', '"', '❤'],
 }
 """
+
+[static_str_literal_mode]
+main_type = "StaticItem"
+string_mode = "Literal"
+definition = """
+#[derive(PartialEq, Debug, Serialize)]
+pub struct StaticItem {
+    pub name: &'static str,
+    pub note: &'static str,
+    pub count: i32,
+    pub flag: bool,
+}
+"""
+value = """
+definition::StaticItem {
+    name: "embedded",
+    note: "矛盾 and ❤\\nnext",
+    count: 42,
+    flag: true,
+}
+"""
+
+[const_static_str]
+main_type = "ConstItem"
+string_mode = "Literal"
+const_compat = true
+definition = """
+#[derive(PartialEq, Debug, Serialize)]
+pub struct ConstItem {
+    pub name: &'static str,
+    pub count: i32,
+}
+"""
+value = """
+definition::ConstItem {
+    name: "compile-time",
+    count: 7,
+}
+"""
+
+[printable_unicode]
+main_type = "Unicode"
+definition = """
+#[derive(PartialEq, Debug, Serialize)]
+pub struct Unicode {
+    pub text: String,
+    pub emoji: String,
+}
+"""
+value = """
+definition::Unicode {
+    text: "矛盾".into(),
+    emoji: "❤ Καλημέρα".into(),
+}
+"""
+
+[raw_identifier_fields]
+main_type = "Raw"
+definition = """
+#[derive(PartialEq, Debug, Serialize)]
+pub struct Raw {
+    pub r#type: i32,
+    pub r#match: bool,
+    pub r#use: String,
+    pub normal: i32,
+}
+"""
+value = """
+definition::Raw {
+    r#type: 1,
+    r#match: true,
+    r#use: "value".into(),
+    normal: 9,
+}
+"""

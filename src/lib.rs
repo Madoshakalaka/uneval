@@ -45,15 +45,27 @@
 //! ```
 //!
 //! ### Strings
-//! When Serde gives us something string-like, we have to make some kind of conversion, since
-//! string literals are of type `&'static str`, and string-like fields in serializable structs are
-//! usually of some owned type, like `String`. We assume that every such type would be convertible to
-//! `String` using [`Into`][std::convert::Into], so we simply emit a string literal with call to `into`.
+//! When Serde gives us something string-like, we have to commit to one shape for the generated code.
+//! By default we wrap every string with a call to [`Into`][std::convert::Into], because the most common
+//! destination type is something owned (`String`, `Cow<'static, str>`, `Box<str>`) that does not coerce
+//! from a literal directly.
 //!
-//! Example:
+//! Example (default):
 //! ```
 //! let _: String = "string value".into();
 //! ```
+//!
+//! If the destination is `&'static str`, or if the generated code needs to be usable inside a
+//! `const`/`static` item, switch to [`StringMode::Literal`][ser::StringMode::Literal] when constructing
+//! the serializer manually. In that mode the output is the bare string literal:
+//!
+//! ```
+//! const NAME: &'static str = "string value";
+//! ```
+//!
+//! Non-ASCII Unicode characters are passed through unchanged: a value of `"矛盾"` is emitted as
+//! `"矛盾"`, not `"\u{77db}\u{76fe}"`. Only the characters that Rust actually requires
+//! (backslash, the matching quote, control codes) are escape-sequence encoded.
 //!
 //! Byte strings are handled as byte sequences, [as recommended by Serde itself][::serde::Serializer::serialize_bytes],
 //! and so we'll discuss them [below](#vec-like-types-sequences).
@@ -106,9 +118,9 @@
 //! In general, here's what being generated:
 //! - A `FromTuple<T>` trait with `from_tuple(input: T) -> Self` associated function.
 //! - Two implementations: `impl<T> FromTuple<(T,...,T,)> for [T; N]` and
-//! `impl<T1, ... TN> FromTuple<(T1,...TN,)> for (T1,...TN,)`.
+//!   `impl<T1, ... TN> FromTuple<(T1,...TN,)> for (T1,...TN,)`.
 //! - Function `convert<T1, ... TN, Out: FromTuple<(T1,...TN,)>>(tuple: (T1,...TN,)) -> Out`,
-//! which simply calls `Out::from_tuple(tuple)`.
+//!   which simply calls `Out::from_tuple(tuple)`.
 //!
 //! Then, the value itself is created by the call to `convert`, with tuple of serialized values as argument.
 //! Depending on whether the target expects the array or tuple, `convert` will select one particular implementation.
@@ -225,14 +237,21 @@
 //! ## Limitations
 //! There are some cases when `uneval` will be unable to generate valid code. Namely:
 //! 1. Since Serde doesn't provide us the full path to the type in question (and in most cases it's simply unable to),
-//! all the structs and enums used during value construction must be in scope.
-//! As a consequence, all of them must have distinct names - otherwise, there will be name clashes.
+//!    all the structs and enums used during value construction must be in scope.
+//!    As a consequence, all of them must have distinct names - otherwise, there will be name clashes.
 //! 2. This serializer is intended for use with derived implementation. It may return bogus results
-//! when used with customized `Serialize`.
+//!    when used with customized `Serialize`.
 //! 3. It is impossible to consume code for the type with private fields outside from the module it is defined in.
-//! In fact, to be able to use this type with `uneval`, you'll have to distribute two copies of your crate,
-//! one of which would only export the definition with derived `Serialize` to be used by serializer
-//! during the build-time of the second copy. (Isn't this a bit too complex?)
+//!    In fact, to be able to use this type with `uneval`, you'll have to distribute two copies of your crate,
+//!    one of which would only export the definition with derived `Serialize` to be used by serializer
+//!    during the build-time of the second copy. (Isn't this a bit too complex?)
+//! 4. `#[serde(rename)]` and `#[serde(rename_all = "...")]` change the *serialized* name that Serde
+//!    passes to the serializer, but not the original Rust identifier; the serializer cannot recover
+//!    the original name. When a rename rule produces a name that does not match the Rust field or
+//!    variant identifier (for example `rename_all = "kebab-case"` on a struct, or `rename_all = "lowercase"`
+//!    on a PascalCase enum), the generated code will refer to a name the destination type does not have
+//!    and will fail to compile. Use `rename` rules that keep Rust identifiers intact, or apply per-field
+//!    `#[serde(rename = "...")]` overrides to undo the transform.
 //!
 //! [include]: https://doc.rust-lang.org/stable/std/macro.include.html
 
@@ -243,3 +262,4 @@ pub mod funcs;
 pub mod ser;
 
 pub use funcs::{to_file, to_out_dir, to_string, write};
+pub use ser::{StringMode, Uneval};

@@ -2,7 +2,7 @@
 name = "uneval"
 version = "0.2.4"
 authors = ["Cerber Ursi <dev+rust@cerbe.ru>"]
-edition = "2021"
+edition = "2024"
 description = "Serde serializer to embed data as Rust code"
 license = "MIT"
 readme = "README.md"
@@ -11,8 +11,8 @@ categories = ["development-tools::build-utils"]
 
 [dependencies]
 serde = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 
-[dev_dependencies]
+[dev-dependencies]
 batch_run = "1.2"
-toml = "0.5"
+toml = "1.1"
