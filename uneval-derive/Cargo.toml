@@ -1,0 +1,16 @@
+[package]
+name = "uneval-derive"
+version = "0.3.0"
+authors = ["Cerber Ursi <dev+rust@cerbe.ru>"]
+edition = "2024"
+description = "Derive macro for the uneval crate"
+license = "MIT"
+repository = "https://github.com/Cerber-Ursi/uneval"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }

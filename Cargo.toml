@@ -1,18 +1,21 @@
+[workspace]
+members = ["uneval-derive"]
+
 [package]
 name = "uneval"
-version = "0.2.4"
+version = "0.3.0"
 authors = ["Cerber Ursi <dev+rust@cerbe.ru>"]
 edition = "2024"
-description = "Serde serializer to embed data as Rust code"
+description = "Embed Rust values as compile-time-evaluable Rust source code"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/Cerber-Ursi/uneval"
 categories = ["development-tools::build-utils"]
 
 [dependencies]
-serde = "1.0"
-thiserror = "2.0"
+uneval-derive = { path = "uneval-derive", version = "0.3.0" }
 
 [dev-dependencies]
 batch_run = "1.2"
 toml = "1.1"
+serde = { version = "1.0", features = ["derive"] }

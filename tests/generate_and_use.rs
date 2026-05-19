@@ -2,7 +2,7 @@ use batch_run::Batch;
 use serde::Deserialize;
 use std::{
     collections::HashMap,
-    fs::{create_dir, read_to_string, File},
+    fs::{File, create_dir, read_to_string},
     io::Write,
     path::{Path, PathBuf},
 };
@@ -13,27 +13,9 @@ struct Data {
     main_type: String,
     support_types: Option<String>,
     #[serde(default)]
-    string_mode: StringModeKind,
-    #[serde(default)]
     const_compat: bool,
     definition: String,
     value: String,
-}
-
-#[derive(Deserialize, Default, Clone, Copy)]
-enum StringModeKind {
-    #[default]
-    IntoCall,
-    Literal,
-}
-
-impl StringModeKind {
-    fn as_str(self) -> &'static str {
-        match self {
-            StringModeKind::IntoCall => "IntoCall",
-            StringModeKind::Literal => "Literal",
-        }
-    }
 }
 
 impl Data {
@@ -49,7 +31,6 @@ impl Data {
             include_str!("main.tpl"),
             name = name,
             value = self.value,
-            string_mode = self.string_mode.as_str()
         )
         .unwrap();
         write!(
