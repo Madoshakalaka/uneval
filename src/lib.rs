@@ -97,6 +97,11 @@ pub use uneval_derive::Uneval;
 /// for all primitive types, `String`, `&str`, `Cow<'_, str>`, `Box<T>`,
 /// references, `Option`, `Result`, `Vec`, slices, arrays, `HashMap`/`BTreeMap`,
 /// `HashSet`/`BTreeSet`, `VecDeque`, and tuples up to arity 12.
+///
+/// Optional impls behind cargo features:
+///
+/// - `url` — `impl Uneval for url::Url`, emitting
+///   `::url::Url::parse("…").unwrap()`. Enable via `features = ["url"]`.
 pub trait Uneval {
     /// Write the Rust source code that, when evaluated in the right type
     /// context, reconstructs `self`. The output is always valid UTF-8.

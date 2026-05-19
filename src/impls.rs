@@ -271,3 +271,12 @@ impl<T: Uneval> Uneval for BTreeSet<T> {
         write_set(w, b"::std::collections::BTreeSet", self.iter())
     }
 }
+
+#[cfg(feature = "url")]
+impl Uneval for url::Url {
+    fn uneval(&self, w: &mut dyn Write) -> io::Result<()> {
+        w.write_all(b"::url::Url::parse(")?;
+        write_str_literal(w, self.as_str())?;
+        w.write_all(b").unwrap()")
+    }
+}

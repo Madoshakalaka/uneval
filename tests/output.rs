@@ -248,3 +248,48 @@ fn generic_struct() {
     let v = Generic { value: "hi" };
     assert_eq!(ser(&v), r#"Generic { value: "hi" }"#);
 }
+
+#[cfg(feature = "url")]
+mod url_feature {
+    use super::ser;
+    use uneval::Uneval;
+    use url::Url;
+
+    #[test]
+    fn url_emits_parse_unwrap() {
+        let u = Url::parse("https://example.com/path?q=1").unwrap();
+        assert_eq!(
+            ser(&u),
+            r#"::url::Url::parse("https://example.com/path?q=1").unwrap()"#
+        );
+    }
+
+    #[test]
+    fn url_round_trips_through_parse() {
+        // Url::parse normalizes IDN hosts to punycode and percent-encodes
+        // non-ASCII path bytes. The serialized form matches `Url::as_str()`,
+        // so the generated code re-parses to an equal value.
+        let u = Url::parse("https://例え.テスト/路径#frag").unwrap();
+        let reconstructed: Url = ::url::Url::parse(u.as_str()).unwrap();
+        assert_eq!(reconstructed, u);
+        assert!(ser(&u).starts_with(r#"::url::Url::parse("https://xn--"#));
+    }
+
+    #[derive(Uneval)]
+    struct Endpoint {
+        name: String,
+        url: Url,
+    }
+
+    #[test]
+    fn url_field_inside_a_derived_struct() {
+        let v = Endpoint {
+            name: "demo".into(),
+            url: Url::parse("https://example.com/").unwrap(),
+        };
+        assert_eq!(
+            ser(&v),
+            r#"Endpoint { name: "demo".to_string(), url: ::url::Url::parse("https://example.com/").unwrap() }"#
+        );
+    }
+}
